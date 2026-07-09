@@ -28,7 +28,9 @@ hashMode: false
 address: ''
 
 # 自有部署后台登录密码
-password: admin
+# 注意：Fork 模式下（address 为空）此字段不生效，后台通过 GitHub Token 登录
+# 仅当填写 address 字段切换到自有部署模式时此密码才生效
+password: ''
 
 # 自有部署启动端口
 port: 7777

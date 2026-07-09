@@ -1,0 +1,26 @@
+# ============================================================================
+# 发现导航 (Nav) - docker-compose.yml
+# Quick start:
+#   docker compose up -d --build
+# Then visit http://localhost:8080
+# ============================================================================
+
+services:
+  nav:
+    image: cshdotcom/nav:latest
+    container_name: nav
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    # Optional: override config at runtime by mounting a custom build
+    # volumes:
+    #   - ./custom-html:/usr/share/nginx/html:ro

@@ -34,8 +34,11 @@ ENV CI=true
 ENV NODE_ENV=production
 
 # Cache: install dependencies first (only package.json + lockfile changed rarely)
+# Note: --no-frozen-lockfile because fork's package.json may differ slightly
+#       from upstream's pnpm-lock.yaml. If you keep them strictly in sync,
+#       switch back to --frozen-lockfile for reproducible builds.
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --no-frozen-lockfile
 
 # Copy source code
 COPY . .

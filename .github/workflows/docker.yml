@@ -1,5 +1,5 @@
 # ============================================================================
-# Docker Image Build & Push
+# Docker Image Build & Push v2
 # ----------------------------------------------------------------------------
 # Default registry: GHCR (ghcr.io) - uses built-in GITHUB_TOKEN, NO setup needed
 # Optional registry: Docker Hub - requires DOCKERHUB_USERNAME + DOCKERHUB_TOKEN
@@ -19,7 +19,7 @@
 # Run:   docker run -d -p 8080:80 ghcr.io/cshdotcom/nav:latest
 # ============================================================================
 
-name: Docker Build & Push
+name: Docker Build & Push v2
 
 on:
   push:

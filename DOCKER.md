@@ -1,10 +1,11 @@
 # Docker 部署 - 发现导航 (Nav)
 
-将 Fork 后的导航项目构建为 Docker 镜像并发布到 Docker Hub。
+将 Fork 后的导航项目构建为 Docker 镜像并发布到 **GHCR (GitHub Container Registry)**，可选同步到 Docker Hub。
 
 ## 镜像信息
 
-- **Docker Hub 仓库**: `cshdotcom/nav`
+- **GHCR 仓库**: `ghcr.io/cshdotcom/nav` (默认，零配置)
+- **Docker Hub 仓库**: `cshdotcom/nav` (可选，需要 Secrets)
 - **多架构支持**: `linux/amd64` + `linux/arm64`
 - **基础镜像**: `nginx:1.27-alpine` (运行时) / `node:22-bookworm-slim` (构建时)
 - **最终镜像大小**: ~50MB (压缩后)

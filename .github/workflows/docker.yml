@@ -1,13 +1,22 @@
 # ============================================================================
-# Docker Image Build & Push to Docker Hub
-# Triggers:
-#   - On push to main (builds :latest + :sha-<short>)
-#   - On git tag v*.*.* (builds :v*.*.* + :latest)
-#   - Manually via workflow_dispatch
+# Docker Image Build & Push
+# ----------------------------------------------------------------------------
+# Default registry: GHCR (ghcr.io) - uses built-in GITHUB_TOKEN, NO setup needed
+# Optional registry: Docker Hub - requires DOCKERHUB_USERNAME + DOCKERHUB_TOKEN
+#                    secrets at https://github.com/cshdotcom/nav-cshll/settings/secrets/actions
 #
-# Required GitHub Secrets (Settings → Secrets and variables → Actions):
-#   DOCKERHUB_USERNAME  - e.g. cshdotcom
-#   DOCKERHUB_TOKEN     - Docker Hub Access Token (https://hub.docker.com/settings/security)
+# Triggers:
+#   - Push to main/master        -> :latest + :v<pkg-version> + :sha-<git>
+#   - Git tag v*.*.*             -> :v*.*.* + :latest
+#   - Manual (workflow_dispatch) -> user-specified tag (default: latest)
+#
+# Default image target (GHCR, zero-config):
+#   ghcr.io/cshdotcom/nav:latest
+#   ghcr.io/cshdotcom/nav:v9.0.0
+#   ghcr.io/cshdotcom/nav:sha-b0c96e4
+#
+# Pull:  docker pull ghcr.io/cshdotcom/nav:latest
+# Run:   docker run -d -p 8080:80 ghcr.io/cshdotcom/nav:latest
 # ============================================================================
 
 name: Docker Build & Push
@@ -21,13 +30,23 @@ on:
       - '**.md'
       - 'docs/**'
   tags:
-    - 'v*.*.*'
+    - 'v*'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Image tag (default: latest)'
+        description: 'Image tag override (default: latest)'
         required: false
         default: 'latest'
+      push_to_dockerhub:
+        description: 'Also push to Docker Hub (requires DOCKERHUB_* secrets)'
+        type: boolean
+        required: false
+        default: false
+
+# Cancel in-progress runs of the same workflow on the same ref
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   docker:
@@ -35,19 +54,34 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+    outputs:
+      image_digest: ${{ steps.build.outputs.digest }}
+      image_tags: ${{ steps.meta.outputs.tags }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up QEMU (for multi-arch builds)
+      - name: Set up QEMU (for arm64 emulation)
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
 
-      - name: Login to Docker Hub
+      - name: Login to GHCR (zero-config, uses GITHUB_TOKEN)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub (optional)
+        if: ${{ github.event.inputs.push_to_dockerhub == 'true' || vars.DOCKERHUB_USERNAME != '' }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -55,33 +89,56 @@ jobs:
 
       - name: Extract metadata
         id: meta
+        env:
+          GHCR_OWNER: ${{ github.repository_owner }}
+          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          PUSH_DH: ${{ github.event.inputs.push_to_dockerhub }}
         run: |
-          # Get version from package.json
+          set -euo pipefail
+          GHCR_OWNER_LC=$(echo "$GHCR_OWNER" | tr '[:upper:]' '[:lower:]')
           PKG_VERSION=$(grep -oP '"version"\s*:\s*"\K[^"]+' package.json | head -1)
           GIT_SHA=$(git rev-parse --short HEAD)
           BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "git_sha=$GIT_SHA" >> "$GITHUB_OUTPUT"
+          echo "build_date=$BUILD_DATE" >> "$GITHUB_OUTPUT"
+          echo "pkg_version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
 
-          # Determine tag set based on trigger
+          GHCR_TAG_BASE="ghcr.io/${GHCR_OWNER_LC}/nav"
+          TAGS="$GHCR_TAG_BASE:latest"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            # Tag push: use the git tag name
             TAG_NAME="${GITHUB_REF#refs/tags/}"
-            echo "version_tag=$TAG_NAME" >> $GITHUB_OUTPUT
-            echo "tags=docker.io/${{ secrets.DOCKERHUB_USERNAME }}/nav:$TAG_NAME,docker.io/${{ secrets.DOCKERHUB_USERNAME }}/nav:latest" >> $GITHUB_OUTPUT
-          elif [[ -n "${{ github.event.inputs.version }}" && "${{ github.event.inputs.version }}" != "latest" ]]; then
-            TAG_NAME="${{ github.event.inputs.version }}"
-            echo "version_tag=$TAG_NAME" >> $GITHUB_OUTPUT
-            echo "tags=docker.io/${{ secrets.DOCKERHUB_USERNAME }}/nav:$TAG_NAME,docker.io/${{ secrets.DOCKERHUB_USERNAME }}/nav:latest" >> $GITHUB_OUTPUT
+            TAGS="$GHCR_TAG_BASE:$TAG_NAME,$GHCR_TAG_BASE:latest"
+            echo "version_tag=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$INPUT_VERSION" && "$INPUT_VERSION" != "latest" ]]; then
+            TAGS="$GHCR_TAG_BASE:$INPUT_VERSION,$GHCR_TAG_BASE:latest"
+            echo "version_tag=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
           else
-            # Branch push: tag with package version + sha
-            echo "version_tag=v$PKG_VERSION" >> $GITHUB_OUTPUT
-            echo "tags=docker.io/${{ secrets.DOCKERHUB_USERNAME }}/nav:v$PKG_VERSION,docker.io/${{ secrets.DOCKERHUB_USERNAME }}/nav:sha-$GIT_SHA,docker.io/${{ secrets.DOCKERHUB_USERNAME }}/nav:latest" >> $GITHUB_OUTPUT
+            TAGS="$GHCR_TAG_BASE:v$PKG_VERSION,$GHCR_TAG_BASE:sha-$GIT_SHA,$GHCR_TAG_BASE:latest"
+            echo "version_tag=v$PKG_VERSION" >> "$GITHUB_OUTPUT"
           fi
 
-          echo "git_sha=$GIT_SHA" >> $GITHUB_OUTPUT
-          echo "build_date=$BUILD_DATE" >> $GITHUB_OUTPUT
-          echo "pkg_version=$PKG_VERSION" >> $GITHUB_OUTPUT
+          if [[ "$PUSH_DH" == "true" && -n "$DH_USER" ]]; then
+            DH_USER_LC=$(echo "$DH_USER" | tr '[:upper:]' '[:lower:]')
+            DH_TAG_BASE="docker.io/${DH_USER_LC}/nav"
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              TAG_NAME="${GITHUB_REF#refs/tags/}"
+              TAGS="$TAGS,$DH_TAG_BASE:$TAG_NAME,$DH_TAG_BASE:latest"
+            elif [[ -n "$INPUT_VERSION" && "$INPUT_VERSION" != "latest" ]]; then
+              TAGS="$TAGS,$DH_TAG_BASE:$INPUT_VERSION,$DH_TAG_BASE:latest"
+            else
+              TAGS="$TAGS,$DH_TAG_BASE:v$PKG_VERSION,$DH_TAG_BASE:latest"
+            fi
+            echo "push_dockerhub=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "push_dockerhub=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+          echo "::notice::Will push tags: $TAGS"
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -95,7 +152,41 @@ jobs:
             org.opencontainers.image.version=${{ steps.meta.outputs.version_tag }}
             org.opencontainers.image.revision=${{ steps.meta.outputs.git_sha }}
             org.opencontainers.image.created=${{ steps.meta.outputs.build_date }}
-            org.opencontainers.image.source=https://github.com/cshdotcom/nav-cshll
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.licenses=GPL-3.0
-          cache-from: type=registry,ref=docker.io/${{ secrets.DOCKERHUB_USERNAME }}/nav:buildcache
-          cache-to: type=registry,ref=docker.io/${{ secrets.DOCKERHUB_USERNAME }}/nav:buildcache,mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Generate summary
+        if: always()
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          VERSION_TAG: ${{ steps.meta.outputs.version_tag }}
+          GIT_SHA: ${{ steps.meta.outputs.git_sha }}
+          PKG_VERSION: ${{ steps.meta.outputs.pkg_version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          OWNER: ${{ github.repository_owner }}
+          PUSH_DH: ${{ steps.meta.outputs.push_dockerhub }}
+        run: |
+          OWNER_LC=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+          {
+            echo "## Docker Build Summary"
+            echo ""
+            echo "| Item | Value |"
+            echo "|------|-------|"
+            echo "| Image tags | \`$TAGS\` |"
+            echo "| Version tag | \`$VERSION_TAG\` |"
+            echo "| Git SHA | \`$GIT_SHA\` |"
+            echo "| Package version | \`$PKG_VERSION\` |"
+            echo "| Image digest | \`$DIGEST\` |"
+            echo "| Platforms | \`linux/amd64, linux/arm64\` |"
+            echo "| Pushed to Docker Hub | \`$PUSH_DH\` |"
+            echo ""
+            echo "### Pull & run"
+            echo ""
+            echo '```bash'
+            echo "docker pull ghcr.io/${OWNER_LC}/nav:${VERSION_TAG}"
+            echo "docker run -d -p 8080:80 --name nav ghcr.io/${OWNER_LC}/nav:${VERSION_TAG}"
+            echo "# open http://localhost:8080"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
